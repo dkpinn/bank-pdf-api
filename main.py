@@ -1,5 +1,5 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, File, UploadFile, Query
+from fastapi.responses import StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 import io
 import csv
@@ -39,28 +39,35 @@ def extract_fields(line, inferred_year):
     return None
 
 @app.post("/parse")
-async def parse_pdf(file: UploadFile = File(...)):
+async def parse_pdf(file: UploadFile = File(...), debug: bool = Query(False)):
     content = await file.read()
     transactions = []
     inferred_year = datetime.today().year
+    debug_lines = []
 
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         current_transaction = None
-        for page in pdf.pages:
-            lines = page.extract_text().split('\n')
-            for line in lines:
-                if is_transaction_line(line):
-                    if current_transaction:
-                        transactions.append(current_transaction)
-                    fields = extract_fields(line, inferred_year)
-                    if fields:
-                        current_transaction = fields
-                else:
-                    if current_transaction:
-                        current_transaction['description'] += ' ' + line.strip()
-
+        for page_number, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text()
+            if text:
+                lines = text.split('\n')
+                debug_lines.append(f"--- Page {page_number} ---")
+                debug_lines.extend(lines)
+                for line in lines:
+                    if is_transaction_line(line):
+                        if current_transaction:
+                            transactions.append(current_transaction)
+                        fields = extract_fields(line, inferred_year)
+                        if fields:
+                            current_transaction = fields
+                    else:
+                        if current_transaction:
+                            current_transaction['description'] += ' ' + line.strip()
         if current_transaction:
             transactions.append(current_transaction)
+
+    if debug:
+        return PlainTextResponse("\n".join(debug_lines), media_type="text/plain")
 
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=["date", "description", "amount", "balance"])
